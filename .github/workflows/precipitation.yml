@@ -1,1 +1,44 @@
+name: Precipitations Forecast
 
+on:
+
+  schedule:
+    - cron: '0 10 * * *'
+
+  workflow_dispatch:
+
+jobs:
+
+  update-sheet:
+
+    runs-on: ubuntu-latest
+
+    env:
+
+      APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+
+      APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
+
+    steps:
+
+    - uses: actions/checkout@v4
+
+    - name: Setup Python
+
+      uses: actions/setup-python@v5
+
+      with:
+
+        python-version: "3.11"
+
+    - name: Install packages
+
+      run: |
+
+        pip install -r requirements.txt
+
+    - name: Execute script
+
+      run: |
+
+        python main.py
