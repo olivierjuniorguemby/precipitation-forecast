@@ -2,29 +2,45 @@ import os
 import json
 import base64
 import requests
-import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+from calendar import monthrange
 from zoneinfo import ZoneInfo
 
 
 REGIONS = {
-    "NO1": {"lat": 61.1153, "lon": 10.4662, "poids": 0.07},
-    "NO2": {"lat": 59.5610, "lon": 7.3560, "poids": 0.39},
-    "NO3": {"lat": 62.5748, "lon": 11.3842, "poids": 0.10},
-    "NO4": {"lat": 66.9000, "lon": 15.3000, "poids": 0.24},
-    "NO5": {"lat": 60.6290, "lon": 6.4220, "poids": 0.20},
+    "NO1": {"latitude": 61.1153, "longitude": 10.4662, "poids": 0.06880733944954129},
+    "NO2": {"latitude": 59.5610, "longitude": 7.3560, "poids": 0.3887614678899083},
+    "NO3": {"latitude": 62.5748, "longitude": 11.3842, "poids": 0.10435779816513763},
+    "NO4": {"latitude": 66.9000, "longitude": 15.3000, "poids": 0.23853211009174316},
+    "NO5": {"latitude": 60.6290, "longitude": 6.4220, "poids": 0.19954128440366972}
 }
 
 
-def recuperer_precipitation_15_jours(lat, lon):
-    url = "https://api.open-meteo.com/v1/ecmwf"
+REF_P_MENSUEL = {
+    1: 147.8476490825688,
+    2: 119.78024655963303,
+    3: 82.76541571100918,
+    4: 48.34010894495414,
+    5: 70.45533256880734,
+    6: 84.17302178899084,
+    7: 107.45086009174312,
+    8: 138.34294724770643,
+    9: 110.70260894495414,
+    10: 133.33689793577983,
+    11: 100.81967889908259,
+    12: 128.44888188073395
+}
+
+
+def recuperer_total_precipitation_15_jours(region, latitude, longitude):
+    url = "https://api.open-meteo.com/v1/forecast"
 
     params = {
-        "latitude": lat,
-        "longitude": lon,
+        "latitude": latitude,
+        "longitude": longitude,
         "hourly": "precipitation",
-        "forecast_days": 15,
         "models": "ecmwf_ifs",
+        "forecast_days": 15,
         "timezone": "Europe/Paris"
     }
 
@@ -32,45 +48,65 @@ def recuperer_precipitation_15_jours(lat, lon):
     response.raise_for_status()
 
     data = response.json()
+    precipitations = data["hourly"]["precipitation"]
 
-    hourly = data.get("hourly", {})
-    times = hourly.get("time", [])
-    precipitations = hourly.get("precipitation", [])
+    total = sum(v for v in precipitations if v is not None)
 
-    if not times or not precipitations:
-        raise Exception("Aucune donnée météo reçue")
-
-    df = pd.DataFrame({
-        "time": pd.to_datetime(times),
-        "precipitation": precipitations
-    })
-
-    total_15_jours = df["precipitation"].sum()
-
-    return round(float(total_15_jours), 1)
+    return round(total, 1)
 
 
-def calculer_payload():
-    date_jour = datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y")
+def calculer_ref_p_m(date_execution):
+    total_ref = 0
 
-    resultats = {
-        "date": date_jour
+    for i in range(1, 16):
+        date_jour = date_execution + timedelta(days=i)
+
+        mois = date_jour.month
+        annee = date_jour.year
+
+        nb_jours_mois = monthrange(annee, mois)[1]
+        ref_mois = REF_P_MENSUEL[mois]
+
+        total_ref += ref_mois / nb_jours_mois
+
+    return round(total_ref, 1)
+
+
+def generer_payload():
+    date_execution = datetime.now(ZoneInfo("Europe/Paris"))
+
+    payload = {
+        "date": date_execution.strftime("%d/%m/%Y")
     }
 
-    pluie_j15 = 0
-
     for region, infos in REGIONS.items():
-        valeur = recuperer_precipitation_15_jours(
-            infos["lat"],
-            infos["lon"]
+        payload[region] = recuperer_total_precipitation_15_jours(
+            region,
+            infos["latitude"],
+            infos["longitude"]
         )
 
-        resultats[region] = valeur
-        pluie_j15 += valeur * infos["poids"]
+    pluie_j15 = (
+        payload["NO1"] * REGIONS["NO1"]["poids"]
+        + payload["NO2"] * REGIONS["NO2"]["poids"]
+        + payload["NO3"] * REGIONS["NO3"]["poids"]
+        + payload["NO4"] * REGIONS["NO4"]["poids"]
+        + payload["NO5"] * REGIONS["NO5"]["poids"]
+    )
 
-    resultats["Pluie J+15"] = round(pluie_j15, 1)
+    payload["Pluie J+15"] = round(pluie_j15, 1)
 
-    return resultats
+    payload["Ref_P/m"] = calculer_ref_p_m(date_execution)
+
+    if payload["Ref_P/m"] != 0:
+        payload["Ecart en %"] = round(
+            (payload["Pluie J+15"] - payload["Ref_P/m"]) / payload["Ref_P/m"],
+            4
+        )
+    else:
+        payload["Ecart en %"] = 0
+
+    return payload
 
 
 def envoyer_json_vers_repo(payload):
@@ -93,11 +129,7 @@ def envoyer_json_vers_repo(payload):
     current_file = get_response.json()
     sha = current_file["sha"]
 
-    json_content = json.dumps(
-        payload,
-        ensure_ascii=False,
-        indent=2
-    )
+    json_content = json.dumps(payload, ensure_ascii=False, indent=2)
 
     encoded_content = base64.b64encode(
         json_content.encode("utf-8")
@@ -118,10 +150,10 @@ def envoyer_json_vers_repo(payload):
 
     put_response.raise_for_status()
 
-    print("JSON mis à jour dans le repo GitHub")
+    print("data.json mis à jour avec succès")
     print(json_content)
 
 
 if __name__ == "__main__":
-    payload = calculer_payload()
+    payload = generer_payload()
     envoyer_json_vers_repo(payload)
